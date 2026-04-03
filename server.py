@@ -931,6 +931,104 @@ async def shopify_create_webhook(params: CreateWebhookInput) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# METAFIELDS (Product SEO: meta title, meta description, custom fields)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class GetMetafieldsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    resource:    str           = Field(..., description="Resource type: products, collections, customers, orders, pages, blogs, articles, shop")
+    resource_id: Optional[int] = Field(default=None, description="Resource ID (omit for shop)")
+    namespace:   Optional[str] = Field(default=None, description="Filter by namespace, e.g. 'global'")
+    limit:       Optional[int] = Field(default=50, ge=1, le=250)
+
+
+@mcp.tool(
+    name="shopify_get_metafields",
+    annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_get_metafields(params: GetMetafieldsInput) -> str:
+    """Get metafields for any resource. Use resource='products' and resource_id=<id> to get product SEO fields (meta title, meta description are in namespace='global')."""
+    try:
+        if params.resource_id:
+            path = f"{params.resource}/{params.resource_id}/metafields.json"
+        else:
+            path = "metafields.json"
+        p: Dict[str, Any] = {"limit": params.limit}
+        if params.namespace:
+            p["namespace"] = params.namespace
+        data       = await _request("GET", path, params=p)
+        metafields = data.get("metafields", [])
+        return _fmt({"count": len(metafields), "metafields": metafields})
+    except Exception as e:
+        return _error(e)
+
+
+class SetMetafieldInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    resource:    str           = Field(..., description="Resource type: products, collections, customers, orders, pages, blogs, articles, shop")
+    resource_id: Optional[int] = Field(default=None, description="Resource ID (omit for shop)")
+    namespace:   str           = Field(..., description="Namespace, e.g. 'global'")
+    key:         str           = Field(..., description="Key, e.g. 'title_tag' for meta title, 'description_tag' for meta description")
+    value:       str           = Field(..., description="The value to set")
+    type:        Optional[str] = Field(default="single_line_text_field", description="Metafield type: single_line_text_field, multi_line_text_field, etc.")
+
+
+@mcp.tool(
+    name="shopify_set_metafield",
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_set_metafield(params: SetMetafieldInput) -> str:
+    """Set a metafield on any resource. To set product SEO: use resource='products', namespace='global', key='title_tag' for meta title or key='description_tag' for meta description."""
+    try:
+        if params.resource_id:
+            path = f"{params.resource}/{params.resource_id}/metafields.json"
+        else:
+            path = "metafields.json"
+        body = {
+            "metafield": {
+                "namespace": params.namespace,
+                "key":       params.key,
+                "value":     params.value,
+                "type":      params.type,
+            }
+        }
+        data = await _request("POST", path, body=body)
+        return _fmt(data.get("metafield", data))
+    except Exception as e:
+        return _error(e)
+
+
+class UpdateProductSEOInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    product_id:       int           = Field(..., description="Product ID to update SEO for")
+    meta_title:       Optional[str] = Field(default=None, description="SEO meta title (max 70 chars recommended)")
+    meta_description: Optional[str] = Field(default=None, description="SEO meta description (max 160 chars recommended)")
+
+
+@mcp.tool(
+    name="shopify_update_product_seo",
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_update_product_seo(params: UpdateProductSEOInput) -> str:
+    """Update the SEO meta title and/or meta description for a product. These are stored as metafields in the 'global' namespace."""
+    try:
+        results = []
+        if params.meta_title is not None:
+            body = {"metafield": {"namespace": "global", "key": "title_tag", "value": params.meta_title, "type": "single_line_text_field"}}
+            data = await _request("POST", f"products/{params.product_id}/metafields.json", body=body)
+            results.append({"field": "meta_title", "result": data.get("metafield", data)})
+        if params.meta_description is not None:
+            body = {"metafield": {"namespace": "global", "key": "description_tag", "value": params.meta_description, "type": "single_line_text_field"}}
+            data = await _request("POST", f"products/{params.product_id}/metafields.json", body=body)
+            results.append({"field": "meta_description", "result": data.get("metafield", data)})
+        if not results:
+            return "No fields provided. Pass meta_title and/or meta_description."
+        return _fmt({"product_id": params.product_id, "updated": results})
+    except Exception as e:
+        return _error(e)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # BLOGS & ARTICLES
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1079,6 +1177,710 @@ async def shopify_delete_article(params: DeleteArticleInput) -> str:
     try:
         await _request("DELETE", f"blogs/{params.blog_id}/articles/{params.article_id}.json")
         return f"Article {params.article_id} deleted from blog {params.blog_id}."
+    except Exception as e:
+        return _error(e)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DISCOUNTS & PRICE RULES
+# ═══════════════════════════════════════════════════════════════════════════
+
+class ListPriceRulesInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    limit:    Optional[int] = Field(default=50, ge=1, le=250)
+    since_id: Optional[int] = Field(default=None)
+
+
+@mcp.tool(
+    name="shopify_list_price_rules",
+    annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_list_price_rules(params: ListPriceRulesInput) -> str:
+    """List all price rules (discount campaigns)."""
+    try:
+        p: Dict[str, Any] = {"limit": params.limit}
+        if params.since_id:
+            p["since_id"] = params.since_id
+        data  = await _request("GET", "price_rules.json", params=p)
+        rules = data.get("price_rules", [])
+        return _fmt({"count": len(rules), "price_rules": rules})
+    except Exception as e:
+        return _error(e)
+
+
+class CreatePriceRuleInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    title:              str            = Field(..., description="Internal name for the price rule")
+    value_type:         str            = Field(..., description="'percentage' or 'fixed_amount'")
+    value:              str            = Field(..., description="Discount value, e.g. '-10.0' for 10% or $10 off")
+    target_type:        str            = Field(default="line_item", description="'line_item' or 'shipping_line'")
+    target_selection:   str            = Field(default="all", description="'all' or 'entitled'")
+    allocation_method:  str            = Field(default="across", description="'across' or 'each'")
+    customer_selection: str            = Field(default="all", description="'all' or 'prerequisite'")
+    starts_at:          str            = Field(..., description="ISO 8601 start date, e.g. 2024-01-01T00:00:00Z")
+    ends_at:            Optional[str]  = Field(default=None, description="ISO 8601 end date (omit for no expiry)")
+    usage_limit:        Optional[int]  = Field(default=None, description="Max total uses (omit for unlimited)")
+    once_per_customer:  Optional[bool] = Field(default=False)
+
+
+@mcp.tool(
+    name="shopify_create_price_rule",
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
+)
+async def shopify_create_price_rule(params: CreatePriceRuleInput) -> str:
+    """Create a new price rule (discount campaign)."""
+    try:
+        rule: Dict[str, Any] = {}
+        for field in ["title", "value_type", "value", "target_type", "target_selection",
+                      "allocation_method", "customer_selection", "starts_at", "ends_at",
+                      "usage_limit", "once_per_customer"]:
+            val = getattr(params, field)
+            if val is not None:
+                rule[field] = val
+        data = await _request("POST", "price_rules.json", body={"price_rule": rule})
+        return _fmt(data.get("price_rule", data))
+    except Exception as e:
+        return _error(e)
+
+
+class ListDiscountCodesInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    price_rule_id: int           = Field(..., description="Price rule ID to list codes for")
+    limit:         Optional[int] = Field(default=50, ge=1, le=250)
+
+
+@mcp.tool(
+    name="shopify_list_discount_codes",
+    annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_list_discount_codes(params: ListDiscountCodesInput) -> str:
+    """List all discount codes for a price rule."""
+    try:
+        p     = {"limit": params.limit}
+        data  = await _request("GET", f"price_rules/{params.price_rule_id}/discount_codes.json", params=p)
+        codes = data.get("discount_codes", [])
+        return _fmt({"count": len(codes), "discount_codes": codes})
+    except Exception as e:
+        return _error(e)
+
+
+class CreateDiscountCodeInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    price_rule_id: int = Field(..., description="Price rule ID to attach the code to")
+    code:          str = Field(..., description="The discount code string, e.g. 'SUMMER20'")
+
+
+@mcp.tool(
+    name="shopify_create_discount_code",
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
+)
+async def shopify_create_discount_code(params: CreateDiscountCodeInput) -> str:
+    """Create a discount code for a price rule."""
+    try:
+        data = await _request("POST", f"price_rules/{params.price_rule_id}/discount_codes.json", body={"discount_code": {"code": params.code}})
+        return _fmt(data.get("discount_code", data))
+    except Exception as e:
+        return _error(e)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DRAFT ORDERS
+# ═══════════════════════════════════════════════════════════════════════════
+
+class ListDraftOrdersInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    limit:  Optional[int] = Field(default=50, ge=1, le=250)
+    status: Optional[str] = Field(default="open", description="open, invoice_sent, completed, or any")
+
+
+@mcp.tool(
+    name="shopify_list_draft_orders",
+    annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_list_draft_orders(params: ListDraftOrdersInput) -> str:
+    """List draft orders (quotes/invoices)."""
+    try:
+        p    = {"limit": params.limit, "status": params.status}
+        data = await _request("GET", "draft_orders.json", params=p)
+        orders = data.get("draft_orders", [])
+        return _fmt({"count": len(orders), "draft_orders": orders})
+    except Exception as e:
+        return _error(e)
+
+
+class CreateDraftOrderInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    line_items:       List[Dict[str, Any]] = Field(..., description="List of line items with variant_id and quantity")
+    customer_id:      Optional[int]        = Field(default=None)
+    email:            Optional[str]        = Field(default=None)
+    note:             Optional[str]        = Field(default=None)
+    tags:             Optional[str]        = Field(default=None)
+    use_customer_default_address: Optional[bool] = Field(default=True)
+
+
+@mcp.tool(
+    name="shopify_create_draft_order",
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
+)
+async def shopify_create_draft_order(params: CreateDraftOrderInput) -> str:
+    """Create a draft order (quote). Can be sent as invoice to customer."""
+    try:
+        order: Dict[str, Any] = {"line_items": params.line_items}
+        for field in ["customer_id", "email", "note", "tags", "use_customer_default_address"]:
+            val = getattr(params, field)
+            if val is not None:
+                order[field] = val
+        data = await _request("POST", "draft_orders.json", body={"draft_order": order})
+        return _fmt(data.get("draft_order", data))
+    except Exception as e:
+        return _error(e)
+
+
+class SendDraftOrderInvoiceInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    draft_order_id: int           = Field(..., description="Draft order ID")
+    to:             Optional[str] = Field(default=None, description="Email to send invoice to (defaults to customer email)")
+    subject:        Optional[str] = Field(default=None)
+    custom_message: Optional[str] = Field(default=None)
+
+
+@mcp.tool(
+    name="shopify_send_draft_order_invoice",
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
+)
+async def shopify_send_draft_order_invoice(params: SendDraftOrderInvoiceInput) -> str:
+    """Send an invoice email for a draft order to the customer."""
+    try:
+        invoice: Dict[str, Any] = {}
+        for field in ["to", "subject", "custom_message"]:
+            val = getattr(params, field)
+            if val is not None:
+                invoice[field] = val
+        data = await _request("POST", f"draft_orders/{params.draft_order_id}/send_invoice.json", body={"draft_order_invoice": invoice})
+        return _fmt(data)
+    except Exception as e:
+        return _error(e)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# REFUNDS
+# ═══════════════════════════════════════════════════════════════════════════
+
+class GetRefundsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    order_id: int           = Field(..., description="Order ID to get refunds for")
+    limit:    Optional[int] = Field(default=50, ge=1, le=250)
+
+
+@mcp.tool(
+    name="shopify_list_refunds",
+    annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_list_refunds(params: GetRefundsInput) -> str:
+    """List all refunds for an order."""
+    try:
+        p       = {"limit": params.limit}
+        data    = await _request("GET", f"orders/{params.order_id}/refunds.json", params=p)
+        refunds = data.get("refunds", [])
+        return _fmt({"count": len(refunds), "refunds": refunds})
+    except Exception as e:
+        return _error(e)
+
+
+class CreateRefundInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    order_id:        int                        = Field(..., description="Order ID to refund")
+    notify:          Optional[bool]             = Field(default=True, description="Send refund notification to customer")
+    note:            Optional[str]              = Field(default=None, description="Internal note about the refund")
+    shipping:        Optional[Dict[str, Any]]   = Field(default=None, description="Shipping refund amount, e.g. {full_refund: true}")
+    refund_line_items: Optional[List[Dict[str, Any]]] = Field(default=None, description="Line items to refund with quantity and restock_type")
+    transactions:    Optional[List[Dict[str, Any]]]   = Field(default=None, description="Transactions for the refund payment")
+
+
+@mcp.tool(
+    name="shopify_create_refund",
+    annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True},
+)
+async def shopify_create_refund(params: CreateRefundInput) -> str:
+    """Issue a refund on an order. Can be partial or full."""
+    try:
+        refund: Dict[str, Any] = {}
+        for field in ["notify", "note", "shipping", "refund_line_items", "transactions"]:
+            val = getattr(params, field)
+            if val is not None:
+                refund[field] = val
+        data = await _request("POST", f"orders/{params.order_id}/refunds.json", body={"refund": refund})
+        return _fmt(data.get("refund", data))
+    except Exception as e:
+        return _error(e)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PRODUCT IMAGES
+# ═══════════════════════════════════════════════════════════════════════════
+
+class ListProductImagesInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    product_id: int = Field(..., description="Product ID")
+
+
+@mcp.tool(
+    name="shopify_list_product_images",
+    annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_list_product_images(params: ListProductImagesInput) -> str:
+    """List all images for a product."""
+    try:
+        data   = await _request("GET", f"products/{params.product_id}/images.json")
+        images = data.get("images", [])
+        return _fmt({"count": len(images), "images": images})
+    except Exception as e:
+        return _error(e)
+
+
+class AddProductImageInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    product_id:  int           = Field(..., description="Product ID")
+    src:         str           = Field(..., description="Public URL of the image")
+    alt:         Optional[str] = Field(default=None, description="Alt text for the image")
+    position:    Optional[int] = Field(default=None, description="Position/order of the image")
+    variant_ids: Optional[List[int]] = Field(default=None, description="Variant IDs to attach this image to")
+
+
+@mcp.tool(
+    name="shopify_add_product_image",
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
+)
+async def shopify_add_product_image(params: AddProductImageInput) -> str:
+    """Add an image to a product from a public URL."""
+    try:
+        image: Dict[str, Any] = {"src": params.src}
+        for field in ["alt", "position", "variant_ids"]:
+            val = getattr(params, field)
+            if val is not None:
+                image[field] = val
+        data = await _request("POST", f"products/{params.product_id}/images.json", body={"image": image})
+        return _fmt(data.get("image", data))
+    except Exception as e:
+        return _error(e)
+
+
+class DeleteProductImageInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    product_id: int = Field(..., description="Product ID")
+    image_id:   int = Field(..., description="Image ID to delete")
+
+
+@mcp.tool(
+    name="shopify_delete_product_image",
+    annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_delete_product_image(params: DeleteProductImageInput) -> str:
+    """Delete an image from a product."""
+    try:
+        await _request("DELETE", f"products/{params.product_id}/images/{params.image_id}.json")
+        return f"Image {params.image_id} deleted from product {params.product_id}."
+    except Exception as e:
+        return _error(e)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PRODUCT VARIANTS
+# ═══════════════════════════════════════════════════════════════════════════
+
+class ListVariantsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    product_id: int           = Field(..., description="Product ID")
+    limit:      Optional[int] = Field(default=50, ge=1, le=250)
+
+
+@mcp.tool(
+    name="shopify_list_variants",
+    annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_list_variants(params: ListVariantsInput) -> str:
+    """List all variants for a product (sizes, colors, prices, SKUs)."""
+    try:
+        p        = {"limit": params.limit}
+        data     = await _request("GET", f"products/{params.product_id}/variants.json", params=p)
+        variants = data.get("variants", [])
+        return _fmt({"count": len(variants), "variants": variants})
+    except Exception as e:
+        return _error(e)
+
+
+class UpdateVariantInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    variant_id:           int            = Field(..., description="Variant ID to update")
+    price:                Optional[str]  = Field(default=None, description="Price, e.g. '29.99'")
+    compare_at_price:     Optional[str]  = Field(default=None, description="Compare-at price for sale display")
+    sku:                  Optional[str]  = Field(default=None)
+    barcode:              Optional[str]  = Field(default=None)
+    weight:               Optional[float]= Field(default=None)
+    weight_unit:          Optional[str]  = Field(default=None, description="g, kg, lb, oz")
+    inventory_policy:     Optional[str]  = Field(default=None, description="deny or continue (oversell)")
+    fulfillment_service:  Optional[str]  = Field(default=None)
+    requires_shipping:    Optional[bool] = Field(default=None)
+    taxable:              Optional[bool] = Field(default=None)
+    option1:              Optional[str]  = Field(default=None, description="Value for option 1 (e.g. size)")
+    option2:              Optional[str]  = Field(default=None, description="Value for option 2 (e.g. color)")
+    option3:              Optional[str]  = Field(default=None)
+
+
+@mcp.tool(
+    name="shopify_update_variant",
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_update_variant(params: UpdateVariantInput) -> str:
+    """Update a product variant — price, compare-at price, SKU, weight, options, etc."""
+    try:
+        variant: Dict[str, Any] = {}
+        for field in ["price", "compare_at_price", "sku", "barcode", "weight", "weight_unit",
+                      "inventory_policy", "fulfillment_service", "requires_shipping", "taxable",
+                      "option1", "option2", "option3"]:
+            val = getattr(params, field)
+            if val is not None:
+                variant[field] = val
+        data = await _request("PUT", f"variants/{params.variant_id}.json", body={"variant": variant})
+        return _fmt(data.get("variant", data))
+    except Exception as e:
+        return _error(e)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PAGES
+# ═══════════════════════════════════════════════════════════════════════════
+
+class ListPagesInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    limit:            Optional[int] = Field(default=50, ge=1, le=250)
+    published_status: Optional[str] = Field(default="any", description="published, unpublished, or any")
+
+
+@mcp.tool(
+    name="shopify_list_pages",
+    annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_list_pages(params: ListPagesInput) -> str:
+    """List all static pages in the store (About, FAQ, etc.)."""
+    try:
+        p     = {"limit": params.limit, "published_status": params.published_status}
+        data  = await _request("GET", "pages.json", params=p)
+        pages = data.get("pages", [])
+        return _fmt({"count": len(pages), "pages": pages})
+    except Exception as e:
+        return _error(e)
+
+
+class CreatePageInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    title:            str            = Field(..., description="Page title")
+    body_html:        Optional[str]  = Field(default=None, description="Page content in HTML")
+    handle:           Optional[str]  = Field(default=None, description="URL slug, e.g. 'about-us'")
+    meta_title:       Optional[str]  = Field(default=None)
+    meta_description: Optional[str]  = Field(default=None)
+    published:        Optional[bool] = Field(default=False, description="True to publish, False for draft")
+
+
+@mcp.tool(
+    name="shopify_create_page",
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
+)
+async def shopify_create_page(params: CreatePageInput) -> str:
+    """Create a new static page in the store."""
+    try:
+        page: Dict[str, Any] = {"title": params.title}
+        for field in ["body_html", "handle", "meta_title", "meta_description", "published"]:
+            val = getattr(params, field)
+            if val is not None:
+                page[field] = val
+        data = await _request("POST", "pages.json", body={"page": page})
+        return _fmt(data.get("page", data))
+    except Exception as e:
+        return _error(e)
+
+
+class UpdatePageInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    page_id:          int            = Field(..., description="Page ID to update")
+    title:            Optional[str]  = Field(default=None)
+    body_html:        Optional[str]  = Field(default=None)
+    handle:           Optional[str]  = Field(default=None)
+    meta_title:       Optional[str]  = Field(default=None)
+    meta_description: Optional[str]  = Field(default=None)
+    published:        Optional[bool] = Field(default=None)
+
+
+@mcp.tool(
+    name="shopify_update_page",
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_update_page(params: UpdatePageInput) -> str:
+    """Update a static page content, SEO fields, or publish status."""
+    try:
+        page: Dict[str, Any] = {}
+        for field in ["title", "body_html", "handle", "meta_title", "meta_description", "published"]:
+            val = getattr(params, field)
+            if val is not None:
+                page[field] = val
+        data = await _request("PUT", f"pages/{params.page_id}.json", body={"page": page})
+        return _fmt(data.get("page", data))
+    except Exception as e:
+        return _error(e)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# REDIRECTS
+# ═══════════════════════════════════════════════════════════════════════════
+
+class ListRedirectsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    limit:   Optional[int] = Field(default=50, ge=1, le=250)
+    path:    Optional[str] = Field(default=None, description="Filter by source path")
+    target:  Optional[str] = Field(default=None, description="Filter by target path")
+
+
+@mcp.tool(
+    name="shopify_list_redirects",
+    annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_list_redirects(params: ListRedirectsInput) -> str:
+    """List URL redirects (301s) configured in the store."""
+    try:
+        p: Dict[str, Any] = {"limit": params.limit}
+        for field in ["path", "target"]:
+            val = getattr(params, field)
+            if val is not None:
+                p[field] = val
+        data      = await _request("GET", "redirects.json", params=p)
+        redirects = data.get("redirects", [])
+        return _fmt({"count": len(redirects), "redirects": redirects})
+    except Exception as e:
+        return _error(e)
+
+
+class CreateRedirectInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    path:   str = Field(..., description="Source path, e.g. '/old-product'")
+    target: str = Field(..., description="Target path or URL, e.g. '/new-product'")
+
+
+@mcp.tool(
+    name="shopify_create_redirect",
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
+)
+async def shopify_create_redirect(params: CreateRedirectInput) -> str:
+    """Create a 301 URL redirect."""
+    try:
+        data = await _request("POST", "redirects.json", body={"redirect": {"path": params.path, "target": params.target}})
+        return _fmt(data.get("redirect", data))
+    except Exception as e:
+        return _error(e)
+
+
+class DeleteRedirectInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    redirect_id: int = Field(..., description="Redirect ID to delete")
+
+
+@mcp.tool(
+    name="shopify_delete_redirect",
+    annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_delete_redirect(params: DeleteRedirectInput) -> str:
+    """Delete a URL redirect."""
+    try:
+        await _request("DELETE", f"redirects/{params.redirect_id}.json")
+        return f"Redirect {params.redirect_id} deleted."
+    except Exception as e:
+        return _error(e)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# GIFT CARDS
+# ═══════════════════════════════════════════════════════════════════════════
+
+class ListGiftCardsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    limit:  Optional[int] = Field(default=50, ge=1, le=250)
+    status: Optional[str] = Field(default="enabled", description="enabled or disabled")
+
+
+@mcp.tool(
+    name="shopify_list_gift_cards",
+    annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_list_gift_cards(params: ListGiftCardsInput) -> str:
+    """List gift cards in the store."""
+    try:
+        p     = {"limit": params.limit, "status": params.status}
+        data  = await _request("GET", "gift_cards.json", params=p)
+        cards = data.get("gift_cards", [])
+        return _fmt({"count": len(cards), "gift_cards": cards})
+    except Exception as e:
+        return _error(e)
+
+
+class CreateGiftCardInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    initial_value: str           = Field(..., description="Gift card value, e.g. '50.00'")
+    code:          Optional[str] = Field(default=None, description="Custom code (auto-generated if omitted)")
+    note:          Optional[str] = Field(default=None)
+    expires_on:    Optional[str] = Field(default=None, description="Expiry date YYYY-MM-DD")
+    customer_id:   Optional[int] = Field(default=None)
+
+
+@mcp.tool(
+    name="shopify_create_gift_card",
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
+)
+async def shopify_create_gift_card(params: CreateGiftCardInput) -> str:
+    """Create a new gift card."""
+    try:
+        card: Dict[str, Any] = {"initial_value": params.initial_value}
+        for field in ["code", "note", "expires_on", "customer_id"]:
+            val = getattr(params, field)
+            if val is not None:
+                card[field] = val
+        data = await _request("POST", "gift_cards.json", body={"gift_card": card})
+        return _fmt(data.get("gift_card", data))
+    except Exception as e:
+        return _error(e)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SHIPPING ZONES
+# ═══════════════════════════════════════════════════════════════════════════
+
+class ListShippingZonesInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+@mcp.tool(
+    name="shopify_list_shipping_zones",
+    annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_list_shipping_zones(params: ListShippingZonesInput) -> str:
+    """List all shipping zones and their rates."""
+    try:
+        data  = await _request("GET", "shipping_zones.json")
+        zones = data.get("shipping_zones", [])
+        return _fmt({"count": len(zones), "shipping_zones": zones})
+    except Exception as e:
+        return _error(e)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TRANSACTIONS
+# ═══════════════════════════════════════════════════════════════════════════
+
+class ListTransactionsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    order_id: int           = Field(..., description="Order ID to get transactions for")
+    limit:    Optional[int] = Field(default=50, ge=1, le=250)
+
+
+@mcp.tool(
+    name="shopify_list_transactions",
+    annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_list_transactions(params: ListTransactionsInput) -> str:
+    """List payment transactions for an order."""
+    try:
+        p            = {"limit": params.limit}
+        data         = await _request("GET", f"orders/{params.order_id}/transactions.json", params=p)
+        transactions = data.get("transactions", [])
+        return _fmt({"count": len(transactions), "transactions": transactions})
+    except Exception as e:
+        return _error(e)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# REPORTS & ANALYTICS
+# ═══════════════════════════════════════════════════════════════════════════
+
+class SalesReportInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    created_at_min: str            = Field(..., description="Start date ISO 8601, e.g. 2024-01-01T00:00:00Z")
+    created_at_max: str            = Field(..., description="End date ISO 8601, e.g. 2024-12-31T23:59:59Z")
+    limit:          Optional[int]  = Field(default=250, ge=1, le=250)
+    financial_status: Optional[str] = Field(default="paid", description="Filter by financial status: paid, pending, refunded, any")
+
+
+@mcp.tool(
+    name="shopify_sales_report",
+    annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_sales_report(params: SalesReportInput) -> str:
+    """Get a sales report for a date range — returns orders with totals, line items, and revenue summary."""
+    try:
+        p = {
+            "created_at_min":   params.created_at_min,
+            "created_at_max":   params.created_at_max,
+            "limit":            params.limit,
+            "financial_status": params.financial_status,
+            "status":           "any",
+            "fields":           "id,order_number,created_at,total_price,subtotal_price,total_tax,financial_status,line_items,customer",
+        }
+        data   = await _request("GET", "orders.json", params=p)
+        orders = data.get("orders", [])
+        total_revenue = sum(float(o.get("total_price", 0)) for o in orders)
+        total_items   = sum(sum(li.get("quantity", 0) for li in o.get("line_items", [])) for o in orders)
+        return _fmt({
+            "summary": {
+                "order_count":     len(orders),
+                "total_revenue":   round(total_revenue, 2),
+                "total_items_sold": total_items,
+                "date_range":      {"from": params.created_at_min, "to": params.created_at_max},
+            },
+            "orders": orders,
+        })
+    except Exception as e:
+        return _error(e)
+
+
+class TopProductsReportInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    created_at_min: str           = Field(..., description="Start date ISO 8601")
+    created_at_max: str           = Field(..., description="End date ISO 8601")
+    limit:          Optional[int] = Field(default=250, ge=1, le=250)
+
+
+@mcp.tool(
+    name="shopify_top_products_report",
+    annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_top_products_report(params: TopProductsReportInput) -> str:
+    """Get top selling products by units sold and revenue for a date range."""
+    try:
+        p = {
+            "created_at_min":   params.created_at_min,
+            "created_at_max":   params.created_at_max,
+            "limit":            params.limit,
+            "financial_status": "paid",
+            "status":           "any",
+            "fields":           "line_items",
+        }
+        data   = await _request("GET", "orders.json", params=p)
+        orders = data.get("orders", [])
+
+        product_stats: Dict[str, Any] = {}
+        for order in orders:
+            for item in order.get("line_items", []):
+                pid   = str(item.get("product_id", "unknown"))
+                title = item.get("title", "Unknown")
+                qty   = item.get("quantity", 0)
+                price = float(item.get("price", 0)) * qty
+                if pid not in product_stats:
+                    product_stats[pid] = {"product_id": pid, "title": title, "units_sold": 0, "revenue": 0.0}
+                product_stats[pid]["units_sold"] += qty
+                product_stats[pid]["revenue"]    += price
+
+        sorted_products = sorted(product_stats.values(), key=lambda x: x["units_sold"], reverse=True)
+        for p_stat in sorted_products:
+            p_stat["revenue"] = round(p_stat["revenue"], 2)
+
+        return _fmt({"top_products": sorted_products})
     except Exception as e:
         return _error(e)
 
