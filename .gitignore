@@ -2,6 +2,11 @@
 .env
 *.env
 
+# Google credentials — never commit these
+credentials.json
+token.json
+*.json.secret
+
 # Python
 __pycache__/
 *.py[cod]
