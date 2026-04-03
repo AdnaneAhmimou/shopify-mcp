@@ -930,6 +930,159 @@ async def shopify_create_webhook(params: CreateWebhookInput) -> str:
         return _error(e)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# BLOGS & ARTICLES
+# ═══════════════════════════════════════════════════════════════════════════
+
+class ListBlogsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    limit:    Optional[int] = Field(default=50, ge=1, le=250)
+    since_id: Optional[int] = Field(default=None)
+
+
+@mcp.tool(
+    name="shopify_list_blogs",
+    annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_list_blogs(params: ListBlogsInput) -> str:
+    """List all blogs in the Shopify store."""
+    try:
+        p: Dict[str, Any] = {"limit": params.limit}
+        if params.since_id:
+            p["since_id"] = params.since_id
+        data  = await _request("GET", "blogs.json", params=p)
+        blogs = data.get("blogs", [])
+        return _fmt({"count": len(blogs), "blogs": blogs})
+    except Exception as e:
+        return _error(e)
+
+
+class ListArticlesInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    blog_id:        int            = Field(..., description="Blog ID to list articles from")
+    limit:          Optional[int]  = Field(default=50, ge=1, le=250)
+    since_id:       Optional[int]  = Field(default=None)
+    published_status: Optional[str] = Field(default="any", description="published, unpublished, or any")
+
+
+@mcp.tool(
+    name="shopify_list_articles",
+    annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_list_articles(params: ListArticlesInput) -> str:
+    """List articles in a specific blog."""
+    try:
+        p: Dict[str, Any] = {"limit": params.limit, "published_status": params.published_status}
+        if params.since_id:
+            p["since_id"] = params.since_id
+        data     = await _request("GET", f"blogs/{params.blog_id}/articles.json", params=p)
+        articles = data.get("articles", [])
+        return _fmt({"count": len(articles), "articles": articles})
+    except Exception as e:
+        return _error(e)
+
+
+class GetArticleInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    blog_id:    int = Field(..., description="Blog ID")
+    article_id: int = Field(..., description="Article ID")
+
+
+@mcp.tool(
+    name="shopify_get_article",
+    annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_get_article(params: GetArticleInput) -> str:
+    """Retrieve a single blog article by ID."""
+    try:
+        data = await _request("GET", f"blogs/{params.blog_id}/articles/{params.article_id}.json")
+        return _fmt(data.get("article", data))
+    except Exception as e:
+        return _error(e)
+
+
+class CreateArticleInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    blog_id:          int            = Field(..., description="Blog ID to create the article in")
+    title:            str            = Field(..., min_length=1, description="Article title")
+    body_html:        Optional[str]  = Field(default=None, description="HTML content of the article")
+    author:           Optional[str]  = Field(default=None, description="Author name")
+    tags:             Optional[str]  = Field(default=None, description="Comma-separated tags")
+    summary_html:     Optional[str]  = Field(default=None, description="Article summary/excerpt in HTML")
+    meta_title:       Optional[str]  = Field(default=None, description="SEO meta title")
+    meta_description: Optional[str]  = Field(default=None, description="SEO meta description")
+    published:        Optional[bool] = Field(default=False, description="True to publish immediately, False to save as draft")
+
+
+@mcp.tool(
+    name="shopify_create_article",
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
+)
+async def shopify_create_article(params: CreateArticleInput) -> str:
+    """Create a new blog article. Set published=False to save as draft."""
+    try:
+        article: Dict[str, Any] = {"title": params.title}
+        for field in ["body_html", "author", "tags", "summary_html", "meta_title", "meta_description", "published"]:
+            val = getattr(params, field)
+            if val is not None:
+                article[field] = val
+        data = await _request("POST", f"blogs/{params.blog_id}/articles.json", body={"article": article})
+        return _fmt(data.get("article", data))
+    except Exception as e:
+        return _error(e)
+
+
+class UpdateArticleInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    blog_id:          int            = Field(..., description="Blog ID")
+    article_id:       int            = Field(..., description="Article ID to update")
+    title:            Optional[str]  = Field(default=None)
+    body_html:        Optional[str]  = Field(default=None)
+    author:           Optional[str]  = Field(default=None)
+    tags:             Optional[str]  = Field(default=None)
+    summary_html:     Optional[str]  = Field(default=None)
+    meta_title:       Optional[str]  = Field(default=None)
+    meta_description: Optional[str]  = Field(default=None)
+    published:        Optional[bool] = Field(default=None, description="True to publish, False to unpublish")
+
+
+@mcp.tool(
+    name="shopify_update_article",
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_update_article(params: UpdateArticleInput) -> str:
+    """Update an existing blog article. Only provided fields are changed."""
+    try:
+        article: Dict[str, Any] = {}
+        for field in ["title", "body_html", "author", "tags", "summary_html", "meta_title", "meta_description", "published"]:
+            val = getattr(params, field)
+            if val is not None:
+                article[field] = val
+        data = await _request("PUT", f"blogs/{params.blog_id}/articles/{params.article_id}.json", body={"article": article})
+        return _fmt(data.get("article", data))
+    except Exception as e:
+        return _error(e)
+
+
+class DeleteArticleInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    blog_id:    int = Field(..., description="Blog ID")
+    article_id: int = Field(..., description="Article ID to delete")
+
+
+@mcp.tool(
+    name="shopify_delete_article",
+    annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True},
+)
+async def shopify_delete_article(params: DeleteArticleInput) -> str:
+    """Permanently delete a blog article."""
+    try:
+        await _request("DELETE", f"blogs/{params.blog_id}/articles/{params.article_id}.json")
+        return f"Article {params.article_id} deleted from blog {params.blog_id}."
+    except Exception as e:
+        return _error(e)
+
+
 # ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
